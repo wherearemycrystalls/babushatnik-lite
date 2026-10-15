@@ -42,6 +42,7 @@ Environment `production` добавьте required reviewers и следующи
 | `DEPLOY_SSH_PRIVATE_KEY` | Отдельный ключ CI с минимальными правами. |
 | `DEPLOY_KNOWN_HOSTS` | Точная строка host key production-сервера. |
 | `GHCR_USERNAME`, `GHCR_PULL_TOKEN` | Read-only package token для pull на сервере. |
+| `ENV_PROD` | Полное содержимое локального `.env.prod` после заполнения production-токенов. При деплое записывается в `DEPLOY_PATH/.env` с правами `600`. Если secret пуст, существующий `.env` на сервере сохраняется. |
 
 `GITHUB_TOKEN` достаточно для публикации пакета, если в настройках Actions
 разрешено `Read and write permissions`. Он не передаётся на сервер.
@@ -60,8 +61,17 @@ Environment `production` добавьте required reviewers и следующи
 3. Запустите `Deploy production`: сначала dry-run с тегом, затем новый запуск с
    `dry_run=false`. Environment approval является обязательной точкой контроля.
 
-На сервер передаются только `docker-compose.prod.yml`, Nginx-конфиг и два
-скрипта. `.env` остаётся на сервере. Скрипт останавливает writers, делает backup до миграции,
+Вместо ручного копирования `.env` можно добавить содержимое `.env.prod` в secret
+`ENV_PROD` Environment `production`. Файл исключён из Git и Docker-образа.
+В нём нужно заполнить `AUTH_BOT_TOKEN` и `LITE_BOT_TOKEN`; production-бот для polling
+должен отличаться от запущенного локального бота. Для существующей БД сохранить её
+текущий пароль: изменение env само по себе не меняет пароль PostgreSQL.
+`APP_IMAGE` передаётся workflow после разрешения тега в digest и не требуется
+в `ENV_PROD`. Для локального запуска с этим файлом использовать `PROD_ENV=.env.prod`.
+
+На сервер передаются `docker-compose.prod.yml`, Nginx-конфиг, два скрипта и,
+если задан `ENV_PROD`, защищённый `.env`. Dry-run не передаёт env и не подключается
+к серверу. Скрипт останавливает writers, делает backup до миграции,
 проверяет readiness `/healthz` с доступом к PostgreSQL и завершится с ошибкой,
 если хотя бы один постоянный сервис не работает.
 

@@ -82,6 +82,19 @@ jobs:
           scp -i "$HOME/.ssh/deploy_key" -o StrictHostKeyChecking=yes docker-compose.prod.yml "$target:$DEPLOY_PATH/"
           scp -i "$HOME/.ssh/deploy_key" -o StrictHostKeyChecking=yes nginx/nginx.conf "$target:$DEPLOY_PATH/nginx/nginx.conf"
           scp -i "$HOME/.ssh/deploy_key" -o StrictHostKeyChecking=yes scripts/deploy.sh scripts/backup-db.sh "$target:$DEPLOY_PATH/scripts/"
+      - name: Install production environment
+        env:
+          ENV_PROD: ${{ secrets.ENV_PROD }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          set -Eeuo pipefail
+          # An empty secret preserves installations with an existing server .env.
+          if [[ -n "$ENV_PROD" ]]; then
+            printf '%s\n' "$ENV_PROD" | ssh -i "$HOME/.ssh/deploy_key" -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+              "set -eu; umask 077; env_tmp=\$(mktemp '$DEPLOY_PATH/.env.XXXXXX'); trap 'rm -f -- \"\$env_tmp\"' EXIT; cat > \"\$env_tmp\"; chmod 600 \"\$env_tmp\"; mv -f -- \"\$env_tmp\" '$DEPLOY_PATH/.env'"
+          fi
       - name: Promote and verify release
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
