@@ -1,0 +1,96 @@
+name: Deploy production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Immutable image tag to promote (for example v0.2.0)
+        required: true
+        type: string
+      dry_run:
+        description: Validate the release reference without connecting to production
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  packages: read
+
+# Deployments are intentionally serialized and never cancelled halfway through.
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release reference
+    runs-on: ubuntu-24.04
+    outputs:
+      image_ref: ${{ steps.image.outputs.image_ref }}
+    steps:
+      - name: Reject unsafe image tags
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: image
+        name: Resolve the tag to an immutable image digest
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}:${{ inputs.image_tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+          digest="$(docker buildx imagetools inspect "$IMAGE" --format '{{.Manifest.Digest}}')"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "image_ref=ghcr.io/${REPOSITORY,,}@$digest" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy
+    needs: validate
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-24.04
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Configure pinned SSH trust
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
+      - name: Upload deployment artefacts
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          set -Eeuo pipefail
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          ssh -i "$HOME/.ssh/deploy_key" -o StrictHostKeyChecking=yes "$target" "mkdir -p '$DEPLOY_PATH/nginx' '$DEPLOY_PATH/scripts'"
+          scp -i "$HOME/.ssh/deploy_key" -o StrictHostKeyChecking=yes docker-compose.prod.yml "$target:$DEPLOY_PATH/"
+          scp -i "$HOME/.ssh/deploy_key" -o StrictHostKeyChecking=yes nginx/nginx.conf "$target:$DEPLOY_PATH/nginx/nginx.conf"
+          scp -i "$HOME/.ssh/deploy_key" -o StrictHostKeyChecking=yes scripts/deploy.sh scripts/backup-db.sh "$target:$DEPLOY_PATH/scripts/"
+      - name: Promote and verify release
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          IMAGE_REF: ${{ needs.validate.outputs.image_ref }}
+        run: |
+          set -Eeuo pipefail
+          printf '%s' "$GHCR_PULL_TOKEN" | ssh -i "$HOME/.ssh/deploy_key" -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "APP_IMAGE='$IMAGE_REF' GHCR_USERNAME='$GHCR_USERNAME' GHCR_PULL_TOKEN_FROM_STDIN=1 DEPLOY_PATH='$DEPLOY_PATH' bash '$DEPLOY_PATH/scripts/deploy.sh'"

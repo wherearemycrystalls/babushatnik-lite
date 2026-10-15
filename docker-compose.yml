@@ -1,0 +1,170 @@
+# Development stack. Override with -p/COMPOSE_PROJECT_NAME for isolated instances.
+name: babushatnik-lite-local
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-app-runtime: &app-runtime
+  build: .
+  image: babushatnik-lite:local
+  init: true
+  read_only: true
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp]
+  volumes:
+    - ./admin:/app/admin:ro
+    - ./background:/app/background:ro
+    - ./bot:/app/bot:ro
+    - ./kufar_scraper:/app/kufar_scraper:ro
+    - ./alembic:/app/alembic:ro
+    - ./alembic.ini:/app/alembic.ini:ro
+    - ./config.py:/app/config.py:ro
+  env_file: ["${APP_ENV_FILE:-.env}"]
+  stop_grace_period: 60s
+  logging: *logging
+
+x-app-environment: &app-env
+  POSTGRES_DB: ${POSTGRES_DB:-kufar}
+  POSTGRES_USER: ${POSTGRES_USER:-kufar}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kufar}
+  POSTGRES_HOST: db
+  POSTGRES_PORT: "5432"
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CELERY_RESULT_BACKEND: redis://redis:6379/0
+  ADMIN_TELEGRAM_AUTH_ENABLED: ${ADMIN_TELEGRAM_AUTH_ENABLED:-false}
+
+services:
+  db:
+    image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-kufar}
+      POSTGRES_USER: ${POSTGRES_USER:-kufar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kufar}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    ports: ["127.0.0.1:${LOCAL_POSTGRES_PORT:-5432}:5432"]
+    restart: unless-stopped
+    logging: *logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    command: redis-server --appendonly yes --appendfsync everysec
+    volumes: [redis_data:/data]
+    ports: ["127.0.0.1:${LOCAL_REDIS_PORT:-6379}:6379"]
+    restart: unless-stopped
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    <<: *app-runtime
+    command: python -m background.migrate
+    environment: *app-env
+    restart: "no"
+    depends_on:
+      db: {condition: service_healthy}
+
+  bootstrap:
+    <<: *app-runtime
+    command: python -m background.bootstrap
+    environment: *app-env
+    restart: "no"
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
+  admin:
+    <<: *app-runtime
+    command: python -m uvicorn admin.app:app --host 0.0.0.0 --port 8000 --reload
+    ports: ["127.0.0.1:${LOCAL_ADMIN_PORT:-8001}:8000"]
+    environment: *app-env
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "uv", "run", "--no-sync", "--no-dev", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  celery_worker_scraper:
+    <<: *app-runtime
+    command: celery -A background.celery_app:celery_app worker -Q scraper -n scraper@%h --concurrency=2 --loglevel=INFO
+    environment: *app-env
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "uv run --no-sync --no-dev celery -A background.celery_app:celery_app inspect ping -d scraper@$$HOSTNAME --timeout 3"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  celery_worker_bot:
+    <<: *app-runtime
+    command: celery -A background.celery_app:celery_app worker -Q bot -n bot-worker@%h --concurrency=1 --loglevel=INFO
+    environment: *app-env
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "uv run --no-sync --no-dev celery -A background.celery_app:celery_app inspect ping -d bot-worker@$$HOSTNAME --timeout 3"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  celery_beat:
+    <<: *app-runtime
+    command: celery -A background.celery_app:celery_app beat --schedule /var/lib/celery/celerybeat-schedule --pidfile /tmp/celerybeat.pid --loglevel=INFO
+    volumes:
+      - ./admin:/app/admin:ro
+      - ./background:/app/background:ro
+      - ./bot:/app/bot:ro
+      - ./kufar_scraper:/app/kufar_scraper:ro
+      - ./alembic:/app/alembic:ro
+      - ./alembic.ini:/app/alembic.ini:ro
+      - ./config.py:/app/config.py:ro
+      - celerybeat_data:/var/lib/celery
+    environment: *app-env
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 $$(cat /tmp/celerybeat.pid)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+
+  bot:
+    <<: *app-runtime
+    command: python -m bot.main
+    environment:
+      <<: *app-env
+      REDIS_URL: redis://redis:6379/1
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  celerybeat_data:

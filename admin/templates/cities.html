@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Города — Babushatnik Lite Admin{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+
+  {# Таблица городов #}
+  <div class="col-lg-8">
+    <h4 class="mb-3">Города для парсинга</h4>
+    <div class="card shadow-sm">
+      <div class="table-responsive">
+        <table class="table table-hover table-bordered mb-0">
+          <thead class="table-dark">
+            <tr>
+              <th>ID</th>
+              <th>Название</th>
+              <th>rgn</th>
+              <th>ar</th>
+              <th>Статус</th>
+              <th>Добавлен</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for c in cities %}
+            <tr>
+              <td class="text-muted">{{ c.id }}</td>
+              <td><strong>{{ c.name }}</strong></td>
+              <td><code>{{ c.rgn }}</code></td>
+              <td><code>{{ c.ar }}</code></td>
+              <td>
+                {% if c.enabled %}
+                  <span class="badge badge-enabled">активен</span>
+                {% else %}
+                  <span class="badge badge-disabled">отключён</span>
+                {% endif %}
+              </td>
+              <td class="text-muted small">
+                {% if c.created_at %}{{ c.created_at.strftime('%d.%m.%Y') }}{% endif %}
+              </td>
+              <td class="d-flex gap-1">
+                <form method="post" action="{{ prefix }}/cities/{{ c.id }}/toggle">
+                  <button type="submit"
+                          class="btn btn-sm {% if c.enabled %}btn-outline-warning{% else %}btn-outline-success{% endif %}">
+                    {% if c.enabled %}Выкл{% else %}Вкл{% endif %}
+                  </button>
+                </form>
+                <form method="post" action="{{ prefix }}/cities/{{ c.id }}/delete"
+                      onsubmit="return confirm('Удалить {{ c.name }}?')">
+                  <button type="submit" class="btn btn-sm btn-outline-danger">Удалить</button>
+                </form>
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="7" class="text-center text-muted py-4">Городов нет</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  {# Форма добавления #}
+  <div class="col-lg-4">
+    <h4 class="mb-3">Добавить город</h4>
+    <div class="card shadow-sm card-body">
+      <form method="post" action="{{ prefix }}/cities/add">
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Название</label>
+          <input type="text" name="name" class="form-control" placeholder="minsk" required>
+          <div class="form-text">Произвольное имя, используется как метка в БД.</div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">rgn <span class="text-muted fw-normal">(регион Kufar)</span></label>
+          <input type="text" name="rgn" class="form-control" placeholder="1" required>
+        </div>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">ar <span class="text-muted fw-normal">(область/район)</span></label>
+          <input type="text" name="ar" class="form-control" placeholder="0" required>
+        </div>
+        <button type="submit" class="btn btn-dark w-100">Добавить</button>
+      </form>
+
+      <hr>
+      <p class="small text-muted mb-1"><strong>Известные коды Kufar:</strong></p>
+      <table class="table table-sm small mb-0">
+        <thead><tr><th>Город</th><th>rgn</th><th>ar</th></tr></thead>
+        <tbody>
+          <tr><td>Гродно</td><td>3</td><td>9</td></tr>
+          <tr><td>Минск</td><td>7</td><td>0</td></tr>
+          <tr><td>Брест</td><td>1</td><td>1</td></tr>
+          <tr><td>Витебск</td><td>6</td><td>18</td></tr>
+          <tr><td>Гомель</td><td>2</td><td>5</td></tr>
+          <tr><td>Могилёв</td><td>4</td><td>13</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

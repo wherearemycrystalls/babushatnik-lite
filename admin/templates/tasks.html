@@ -1,0 +1,297 @@
+{% extends "base.html" %}
+{% block title %}Tasks — Babushatnik Lite Admin{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-xl-4">
+    <h4 class="mb-3">Celery Tasks</h4>
+
+    <div class="card shadow-sm card-body mb-3">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <span class="fw-semibold">Workers</span>
+        <span id="workers-badge" class="badge bg-secondary">—</span>
+      </div>
+      <div id="workers-list" class="small text-muted">Loading...</div>
+    </div>
+
+    {% for mode, title, schedule, action in [
+      ('quick', 'Quick search · new listings', status.schedule, 'new-listings'),
+      ('full', 'Full refresh · all pages', status.full_schedule, 'full-reconciliation')
+    ] %}
+    <div class="card shadow-sm card-body mb-3">
+      <div class="d-flex justify-content-between align-items-center mb-2 gap-2">
+        <span class="fw-semibold">{{ title }}</span>
+        <span id="{{ mode }}-schedule-badge" class="badge bg-secondary">—</span>
+      </div>
+      <p class="small text-muted mb-2">{% if mode == 'quick' %}Scan the configured number of latest pages. No automatic full scan.{% else %}Refresh the complete catalog across all pages and archive absent listings.{% endif %}</p>
+      <div class="small mb-1"><span class="text-muted">Next run:</span> <span id="{{ mode }}-schedule-next">—</span></div>
+      <div class="small mb-3"><span class="text-muted">Last enqueued:</span> <span id="{{ mode }}-schedule-last">—</span></div>
+      <form method="post" action="{{ prefix }}/tasks/schedules/{{ action }}" class="row g-2 align-items-end">
+        <div class="col-7">
+          <label class="form-label small fw-semibold" for="{{ mode }}-interval">Interval, minutes</label>
+          <input id="{{ mode }}-interval" type="number" min="1" max="35791394" name="interval_minutes" class="form-control form-control-sm" value="{{ schedule.interval_minutes }}" required>
+        </div>
+        <div class="col-5"><div class="form-check mb-1">
+          <input class="form-check-input" type="checkbox" name="enabled" id="{{ mode }}-schedule-enabled" {% if schedule.enabled %}checked{% endif %}>
+          <label class="form-check-label small" for="{{ mode }}-schedule-enabled">Enabled</label>
+        </div></div>
+        {% if mode == 'quick' %}
+        <div class="col-12">
+          <label class="form-label small fw-semibold" for="quick-max-pages">Pages per run</label>
+          <input id="quick-max-pages" type="number" min="1" max="2147483647" name="max_pages" class="form-control form-control-sm" value="{{ schedule.max_pages }}" required>
+        </div>
+        {% endif %}
+        <div class="col-12"><button type="submit" class="btn btn-dark btn-sm w-100">Save schedule</button></div>
+      </form>
+    </div>
+    {% endfor %}
+
+    <div class="card shadow-sm card-body">
+      <div class="fw-semibold mb-2">Manual runs</div>
+      <form method="post" action="{{ prefix }}/tasks/run-new-listings" class="mb-2">
+        <div class="input-group input-group-sm">
+          <select name="city_name" class="form-select">
+            <option value="">All active cities</option>
+            {% for c in cities %}
+              <option value="{{ c.name }}">{{ c.name }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="btn btn-dark">Run incremental</button>
+        </div>
+      </form>
+      <form method="post" action="{{ prefix }}/tasks/run-full-scrape">
+        <div class="input-group input-group-sm">
+          <select name="city_name" class="form-select">
+            <option value="">All active cities</option>
+            {% for c in cities %}
+              <option value="{{ c.name }}">{{ c.name }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="btn btn-outline-dark">Run full scrape</button>
+        </div>
+      </form>
+      {% if not cities %}
+        <div class="alert alert-warning py-2 mt-2 small mb-0">
+          No active cities. <a href="{{ prefix }}/cities">Add cities</a> first.
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="col-xl-8">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h4 class="mb-0">Runs</h4>
+      <span class="text-muted small" id="poll-state">live</span>
+    </div>
+
+    <div class="card shadow-sm mb-3">
+      <div class="card-header bg-white fw-semibold">Running / queued</div>
+      <div class="table-responsive">
+        <table class="table table-sm table-hover mb-0 small align-middle">
+          <thead class="table-light">
+            <tr>
+              <th>ID</th>
+              <th>Task</th>
+              <th>Status</th>
+              <th>Mode</th>
+              <th>City</th>
+              <th>Started</th>
+              <th class="text-end">Action</th>
+            </tr>
+          </thead>
+          <tbody id="running-body">
+            <tr><td colspan="7" class="text-center text-muted py-3">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card shadow-sm mb-3">
+      <div class="card-header bg-white fw-semibold">Recent runs</div>
+      <div class="table-responsive">
+        <table class="table table-sm table-hover mb-0 small align-middle">
+          <thead class="table-light">
+            <tr>
+              <th>ID</th>
+              <th>Task</th>
+              <th>Status</th>
+              <th>Finished</th>
+              <th>Counters</th>
+            </tr>
+          </thead>
+          <tbody id="recent-body">
+            <tr><td colspan="5" class="text-center text-muted py-3">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card shadow-sm">
+      <div class="card-header bg-white d-flex justify-content-between align-items-center">
+        <span class="fw-semibold">Task log</span>
+        <span class="text-muted small" id="selected-run">—</span>
+      </div>
+      <div id="log-box"
+           style="background:#1e1e1e; color:#d4d4d4; font-family:monospace; font-size:0.82em;
+                  height:320px; overflow-y:auto; padding:1rem;">
+        <div class="text-secondary">No log output yet.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const INITIAL_STATUS = {{ status|tojson }};
+  const PREFIX = '{{ prefix }}';
+  let selectedRunId = INITIAL_STATUS.selected_run_id;
+
+  function esc(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[ch]);
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
+    return d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  }
+
+  function statusBadge(status) {
+    const cls = {
+      queued: 'bg-secondary',
+      running: 'bg-warning text-dark',
+      success: 'bg-success',
+      error: 'bg-danger',
+      revoked: 'bg-dark'
+    }[status] || 'bg-secondary';
+    return `<span class="badge ${cls}">${esc(status)}</span>`;
+  }
+
+  function compactCounters(counters) {
+    const entries = Object.entries(counters || {}).filter(([, value]) => value !== 0 && value !== null);
+    if (!entries.length) return '<span class="text-muted">—</span>';
+    return entries.map(([key, value]) => `${esc(key)}=${esc(value)}`).join(' ');
+  }
+
+  function runRow(run, withRevoke) {
+    const selected = Number(run.id) === Number(selectedRunId) ? 'table-active' : '';
+    if (!withRevoke) {
+      return `<tr class="${selected}" data-run-id="${run.id}" style="cursor:pointer">
+        <td class="text-muted">${run.id}</td>
+        <td>${esc(run.task_name)}</td>
+        <td>${statusBadge(run.status)}</td>
+        <td class="text-nowrap">${fmtDate(run.finished_at || run.started_at || run.created_at)}</td>
+        <td>${compactCounters(run.counters)}</td>
+      </tr>`;
+    }
+    const revoke = withRevoke
+      ? `<form method="post" action="${PREFIX}/tasks/${run.id}/revoke">
+           <button class="btn btn-sm btn-outline-danger py-0" type="submit">Revoke</button>
+         </form>`
+      : '';
+    return `<tr class="${selected}" data-run-id="${run.id}" style="cursor:pointer">
+      <td class="text-muted">${run.id}</td>
+      <td>${esc(run.task_name)}</td>
+      <td>${statusBadge(run.status)}</td>
+      <td>${esc(run.mode || '—')}</td>
+      <td>${esc(run.city_name || 'all')}</td>
+      <td class="text-nowrap">${fmtDate(run.started_at || run.created_at)}</td>
+      ${withRevoke ? `<td class="text-end">${revoke}</td>` : `<td>${compactCounters(run.counters)}</td>`}
+    </tr>`;
+  }
+
+  function renderWorkers(workers) {
+    const badge = document.getElementById('workers-badge');
+    const list = document.getElementById('workers-list');
+    badge.textContent = `${workers.online} online`;
+    badge.className = 'badge ' + (workers.online > 0 ? 'bg-success' : 'bg-danger');
+    if (workers.error) {
+      list.innerHTML = `<span class="text-danger">${esc(workers.error)}</span>`;
+      return;
+    }
+    if (!workers.workers.length) {
+      list.innerHTML = '<span class="text-muted">No workers responded.</span>';
+      return;
+    }
+    list.innerHTML = workers.workers.map((worker) => {
+      const queues = worker.queues.length ? worker.queues.join(', ') : '—';
+      return `<div class="mb-1">
+        <span class="fw-semibold">${esc(worker.name)}</span>
+        <span class="text-muted">queues: ${esc(queues)}, active: ${worker.active}, reserved: ${worker.reserved}</span>
+      </div>`;
+    }).join('');
+  }
+
+  function renderSchedule(schedule, mode) {
+    const badge = document.getElementById(`${mode}-schedule-badge`);
+    badge.textContent = schedule.enabled ? 'enabled' : 'disabled';
+    badge.className = 'badge ' + (schedule.enabled ? 'bg-success' : 'bg-secondary');
+    document.getElementById(`${mode}-schedule-next`).textContent = fmtDate(schedule.next_run_at);
+    document.getElementById(`${mode}-schedule-last`).textContent = fmtDate(schedule.last_enqueued_at);
+  }
+
+  function bindRunClicks() {
+    document.querySelectorAll('[data-run-id]').forEach((row) => {
+      row.addEventListener('click', (event) => {
+        if (event.target.closest('form') || event.target.closest('button')) return;
+        selectedRunId = row.dataset.runId;
+        poll();
+      });
+    });
+  }
+
+  function renderRuns(data) {
+    const runningBody = document.getElementById('running-body');
+    runningBody.innerHTML = data.running.length
+      ? data.running.map((run) => runRow(run, true)).join('')
+      : '<tr><td colspan="7" class="text-center text-muted py-3">No queued or running tasks.</td></tr>';
+
+    const recentBody = document.getElementById('recent-body');
+    recentBody.innerHTML = data.recent.length
+      ? data.recent.map((run) => runRow(run, false)).join('')
+      : '<tr><td colspan="5" class="text-center text-muted py-3">No task runs yet.</td></tr>';
+    bindRunClicks();
+  }
+
+  function renderLogs(data) {
+    selectedRunId = selectedRunId || data.selected_run_id;
+    document.getElementById('selected-run').textContent = selectedRunId ? `run #${selectedRunId}` : '—';
+    const box = document.getElementById('log-box');
+    const atBottom = box.scrollHeight - box.clientHeight <= box.scrollTop + 20;
+    if (!data.logs.length) {
+      box.innerHTML = '<div class="text-secondary">No log output yet.</div>';
+    } else {
+      box.innerHTML = data.logs.map((log) => {
+        const cls = log.level === 'error' ? 'text-danger' : (log.level === 'warning' ? 'text-warning' : '');
+        return `<div class="${cls}">[${fmtDate(log.created_at)}] ${esc(log.message)}</div>`;
+      }).join('');
+    }
+    if (atBottom) box.scrollTop = box.scrollHeight;
+  }
+
+  function render(data) {
+    renderWorkers(data.workers);
+    renderSchedule(data.schedule, 'quick');
+    renderSchedule(data.full_schedule, 'full');
+    renderRuns(data);
+    renderLogs(data);
+  }
+
+  async function poll() {
+    try {
+      const qs = selectedRunId ? `?run_id=${encodeURIComponent(selectedRunId)}` : '';
+      const response = await fetch(`${PREFIX}/tasks/status${qs}`);
+      const data = await response.json();
+      document.getElementById('poll-state').textContent = 'live';
+      render(data);
+    } catch (error) {
+      document.getElementById('poll-state').textContent = 'offline';
+    }
+  }
+
+  render(INITIAL_STATUS);
+  setInterval(poll, 3000);
+</script>
+{% endblock %}

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ listing.title or 'Объявление' }} — Admin{% endblock %}
+{% block content %}
+<p><a href="{{ prefix }}/" class="btn btn-sm btn-outline-secondary">← К списку</a></p>
+<div class="card shadow-sm mb-3"><div class="card-body">
+  <div class="d-flex justify-content-between gap-3"><div><h4>{{ listing.title or ((listing.rooms or '?') ~ '-комн. квартира') }}</h4><p class="text-muted">{{ listing.city }} · ID {{ listing.ad_id }}{% if listing.company_ad is not none %} · {{ 'Компания' if listing.company_ad else 'Частное объявление' }}{% endif %}</p></div><div>{% if listing.is_hidden_by_admin %}<span class="badge bg-warning text-dark">скрыто вручную</span>{% elif listing.is_source_active %}<span class="badge bg-success">в выдаче</span>{% else %}<span class="badge bg-secondary">снято источником</span>{% endif %}</div></div>
+  <dl class="row">
+    <dt class="col-sm-3">Цена</dt><dd class="col-sm-9">{{ listing.price_usd|number }} USD / {{ listing.price_byn|number }} BYN / {{ listing.price_eur|number }} EUR</dd>
+    <dt class="col-sm-3">Адрес</dt><dd class="col-sm-9">{{ listing.address or '—' }}</dd>
+    <dt class="col-sm-3">Площадь</dt><dd class="col-sm-9">Общая {{ listing.area_total|number }} / жилая {{ listing.area_living|number }} / кухня {{ listing.area_kitchen|number }} м²</dd>
+    <dt class="col-sm-3">Комнаты / этаж</dt><dd class="col-sm-9">{{ listing.rooms or '—' }} / {{ listing.floor or '—' }} из {{ listing.total_floors or '—' }}</dd>
+    <dt class="col-sm-3">Дом</dt><dd class="col-sm-9">{{ listing.house_type or '—' }} · {{ listing.year_built or '—' }}</dd>
+    <dt class="col-sm-3">Ремонт</dt><dd class="col-sm-9">{{ listing.repair or '—' }}</dd>
+    <dt class="col-sm-3">Время Kufar (list_time)</dt><dd class="col-sm-9">{{ listing.list_time|source_time }}</dd>
+    <dt class="col-sm-3">Первое полученное list_time</dt><dd class="col-sm-9">{{ listing.first_list_time|source_time }}</dd>
+    <dt class="col-sm-3">Обнаружено нами</dt><dd class="col-sm-9">{{ listing.created_at|source_time }}</dd>
+    <dt class="col-sm-3">Изменение данных замечено</dt><dd class="col-sm-9">{{ listing.content_changed_at|source_time }}</dd>
+    <dt class="col-sm-3">Последний раз в выдаче</dt><dd class="col-sm-9">{{ listing.last_seen_at|source_time }}</dd>
+    <dt class="col-sm-3">Детальная карточка получена</dt><dd class="col-sm-9">{{ listing.details_fetched_at|source_time }}</dd>
+    <dt class="col-sm-3">Координаты (долгота, широта)</dt><dd class="col-sm-9">{{ listing.longitude|number }}, {{ listing.latitude|number }}</dd>
+    <dt class="col-sm-3">До центра по данным Kufar</dt><dd class="col-sm-9">{{ listing.distance_to_center_km|number }} км</dd>
+  </dl>
+  <p class="small text-muted">Время: {{ display_timezone }}. list_time — дата, полученная от Kufar; она не доказывает время первой публикации или редактирования.</p>
+  {% if listing.data_warnings %}<div class="alert alert-warning">Проверка данных: {{ listing.data_warnings|join(', ') }}</div>{% endif %}
+  <p style="white-space:pre-wrap">{{ listing.description or 'Описание отсутствует' }}</p>
+  {% if listing.link %}<a href="{{ listing.link }}" target="_blank" rel="noopener noreferrer">Открыть на Kufar</a>{% endif %}
+  {% if listing.images %}<div class="row g-2 mt-2">{% for image in listing.images %}<div class="col-md-3"><a href="{{ image }}" target="_blank" rel="noopener noreferrer"><img src="{{ image }}" loading="lazy" class="img-fluid rounded" alt="Фото объявления"></a></div>{% endfor %}</div>{% endif %}
+</div></div>
+{% for scope, entries in (listing.parameter_details or {}).items() %}
+<div class="card shadow-sm mb-3"><div class="card-header">{{ 'Характеристики квартиры' if scope == 'ad' else 'Параметры аккаунта' }}</div><div class="table-responsive"><table class="table table-sm mb-0"><tbody>{% for key, entry in entries.items() %}<tr><th style="width:35%">{{ entry.pl or key }} <small class="text-muted">({{ key }})</small></th><td>{{ entry|parameter_value }}</td></tr>{% endfor %}</tbody></table></div></div>
+{% endfor %}
+<details class="card p-3 mb-3"><summary>История наблюдаемых изменений (последние 50)</summary>{% for change in changes %}<details class="mt-2"><summary>{{ change.observed_at|source_time }} · {{ change.kind }} · {{ change.changes.keys()|join(', ') }}</summary><pre class="small mt-2" style="white-space:pre-wrap">{{ change.changes|tojson(indent=2) }}</pre></details>{% else %}<p class="text-muted mt-2">История появится после обновления данных из Kufar.</p>{% endfor %}</details>
+<details class="card p-3 mb-3"><summary>Исходный JSON поиска</summary><pre class="small mt-2" style="white-space:pre-wrap">{{ listing.raw_search|tojson(indent=2) }}</pre></details>
+<details class="card p-3 mb-3"><summary>Исходный JSON детальной карточки</summary><pre class="small mt-2" style="white-space:pre-wrap">{{ listing.raw_detail|tojson(indent=2) }}</pre></details>
+{% endblock %}

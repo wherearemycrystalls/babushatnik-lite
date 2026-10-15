@@ -1,0 +1,176 @@
+# Production uses a published digest and a separate Compose project/volumes.
+# Existing deployments must keep their previous COMPOSE_PROJECT_NAME to reuse data.
+name: babushatnik-lite
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-app-runtime: &app-runtime
+  image: "${APP_IMAGE:?set APP_IMAGE to a published image@sha256 digest}"
+  init: true
+  read_only: true
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp]
+  env_file: ["${APP_ENV_FILE:-.env.production}"]
+  stop_grace_period: 60s
+  logging: *logging
+
+x-app-environment: &app-env
+  POSTGRES_DB: ${POSTGRES_DB:-kufar}
+  POSTGRES_USER: ${POSTGRES_USER:-kufar}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set production POSTGRES_PASSWORD}
+  POSTGRES_HOST: db
+  POSTGRES_PORT: "5432"
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CELERY_RESULT_BACKEND: redis://redis:6379/0
+  ADMIN_TELEGRAM_AUTH_ENABLED: "true"
+  AUTH_BOT_TOKEN: ${AUTH_BOT_TOKEN:?set production AUTH_BOT_TOKEN}
+  LITE_BOT_TOKEN: ${LITE_BOT_TOKEN:?set production LITE_BOT_TOKEN}
+  SESSION_SECRET_KEY: ${SESSION_SECRET_KEY:?set production SESSION_SECRET_KEY}
+  ALLOWED_TELEGRAM_IDS: ${ALLOWED_TELEGRAM_IDS:?set production ALLOWED_TELEGRAM_IDS}
+
+services:
+  db:
+    image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-kufar}
+      POSTGRES_USER: ${POSTGRES_USER:-kufar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set production POSTGRES_PASSWORD}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    logging: *logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    command: redis-server --appendonly yes --appendfsync everysec
+    volumes: [redis_data:/data]
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    <<: *app-runtime
+    command: python -m background.migrate
+    environment: *app-env
+    restart: "no"
+    depends_on:
+      db: {condition: service_healthy}
+
+  bootstrap:
+    <<: *app-runtime
+    command: python -m background.bootstrap
+    environment: *app-env
+    restart: "no"
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
+  admin:
+    <<: *app-runtime
+    command: python -m uvicorn admin.app:app --host 0.0.0.0 --port 8000
+    environment: *app-env
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "uv", "run", "--no-sync", "--no-dev", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  nginx:
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    ports: ["127.0.0.1:${PROD_ADMIN_PORT:-8081}:80"]
+    volumes: [./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro]
+    depends_on:
+      admin: {condition: service_healthy}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/var/cache/nginx, /var/run, /tmp]
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--output-document=/dev/null", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  celery_worker_scraper:
+    <<: *app-runtime
+    command: celery -A background.celery_app:celery_app worker -Q scraper -n scraper@%h --concurrency=2 --loglevel=INFO
+    environment: *app-env
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "uv run --no-sync --no-dev celery -A background.celery_app:celery_app inspect ping -d scraper@$$HOSTNAME --timeout 3"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  celery_worker_bot:
+    <<: *app-runtime
+    command: celery -A background.celery_app:celery_app worker -Q bot -n bot-worker@%h --concurrency=1 --loglevel=INFO
+    environment: *app-env
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "uv run --no-sync --no-dev celery -A background.celery_app:celery_app inspect ping -d bot-worker@$$HOSTNAME --timeout 3"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  celery_beat:
+    <<: *app-runtime
+    command: celery -A background.celery_app:celery_app beat --schedule /var/lib/celery/celerybeat-schedule --pidfile /tmp/celerybeat.pid --loglevel=INFO
+    volumes: [celerybeat_data:/var/lib/celery]
+    environment: *app-env
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 $$(cat /tmp/celerybeat.pid)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+
+  bot:
+    <<: *app-runtime
+    command: python -m bot.main
+    environment:
+      <<: *app-env
+      REDIS_URL: redis://redis:6379/1
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  celerybeat_data:
